@@ -1,0 +1,184 @@
+name: Windows RDP with High Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      rdp_duration:
+        description: 'RDP session duration in minutes (max 360)'
+        required: false
+        default: '180'
+        type: string
+      enable_gpu:
+        description: 'Enable GPU acceleration'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  setup-windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: System Information
+      run: |
+        Write-Host "=== System Information ===" -ForegroundColor Green
+        Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory
+        Get-WmiObject -Class Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+        Get-WmiObject -Class Win32_VideoController | Select-Object Name, AdapterRAM
+        Write-Host "=== Disk Space ===" -ForegroundColor Green
+        Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, Size, FreeSpace | Format-Table
+        
+    - name: Enable RDP and Configure Firewall
+      run: |
+        Write-Host "Enabling RDP..." -ForegroundColor Yellow
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        
+    - name: Create RDP User
+      run: |
+        Write-Host "Creating RDP user..." -ForegroundColor Yellow
+        $Password = ConvertTo-SecureString "P@ssw0rd123!" -AsPlainText -Force
+        New-LocalUser -Name "rdpuser" -Password $Password -FullName "RDP User" -Description "GitHub Actions RDP User"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
+        Add-LocalGroupMember -Group "Administrators" -Member "rdpuser"
+        
+    - name: Configure High Performance Settings
+      run: |
+        Write-Host "Configuring high performance settings..." -ForegroundColor Yellow
+        
+        # Set power plan to High Performance
+        powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+        
+        # Disable Windows Defender real-time protection for better performance
+        Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+        
+        # Optimize visual effects for performance
+        $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+        if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+        Set-ItemProperty -Path $regPath -Name "VisualFXSetting" -Value 2
+        
+        # Disable unnecessary services
+        $servicesToDisable = @(
+            "Themes",
+            "TabletInputService",
+            "Fax"
+        )
+        foreach ($service in $servicesToDisable) {
+            try {
+                Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+                Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
+                Write-Host "Disabled service: $service" -ForegroundColor Green
+            } catch {
+                Write-Host "Could not disable service: $service" -ForegroundColor Red
+            }
+        }
+        
+    - name: Install Essential Software
+      run: |
+        Write-Host "Installing essential software..." -ForegroundColor Yellow
+        
+        # Install Chocolatey
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        
+        # Install useful tools
+        choco install -y googlechrome firefox 7zip notepadplusplus git vscode
+        
+        # Install development tools
+        choco install -y nodejs python3 dotnet-sdk
+        
+    - name: Setup GPU Acceleration (if enabled)
+      if: ${{ github.event.inputs.enable_gpu == 'true' }}
+      run: |
+        Write-Host "Configuring GPU acceleration..." -ForegroundColor Yellow
+        
+        # Enable hardware acceleration in registry
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+        Set-ItemProperty -Path $regPath -Name "HwSchMode" -Value 2 -ErrorAction SilentlyContinue
+        
+        # DirectX and GPU info
+        dxdiag /t dxdiag_output.txt
+        Write-Host "DirectX diagnostics saved to dxdiag_output.txt"
+        
+    - name: Configure Remote Desktop Settings
+      run: |
+        Write-Host "Optimizing RDP settings..." -ForegroundColor Yellow
+        
+        # Enable RemoteFX
+        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+        if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+        Set-ItemProperty -Path $regPath -Name "fEnableRemoteFXAdvancedRemoteApp" -Value 1
+        
+        # Optimize RDP performance
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "fDisableAutoReconnect" -Value 0
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxInstanceCount" -Value 999999
+        
+    - name: Install ngrok for RDP tunneling
+      run: |
+        Write-Host "Setting up ngrok for RDP access..." -ForegroundColor Yellow
+        
+        # Download and install ngrok
+        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+        Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok"
+        $env:PATH += ";C:\ngrok"
+        
+        # Start ngrok tunnel for RDP
+        Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log stdout" -NoNewWindow
+        
+        Start-Sleep -Seconds 10
+        
+        # Get ngrok tunnel URL
+        try {
+            $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+            $rdpTunnel = $ngrokApi.tunnels | Where-Object { $_.config.addr -eq "localhost:3389" }
+            if ($rdpTunnel) {
+                Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
+                Write-Host "RDP Address: $($rdpTunnel.public_url -replace 'tcp://', '')" -ForegroundColor Cyan
+                Write-Host "Username: rdpuser" -ForegroundColor Cyan
+                Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+                Write-Host "=========================" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "Could not retrieve ngrok tunnel info. Check manually at http://localhost:4040" -ForegroundColor Yellow
+        }
+        
+    - name: Display Connection Information
+      run: |
+        Write-Host "=== FINAL SYSTEM STATUS ===" -ForegroundColor Green
+        Write-Host "RDP is now enabled and configured for high performance" -ForegroundColor Cyan
+        Write-Host "Session will remain active for ${{ github.event.inputs.rdp_duration }} minutes" -ForegroundColor Cyan
+        Write-Host "" 
+        Write-Host "=== CONNECTION DETAILS ===" -ForegroundColor Green
+        Write-Host "Username: rdpuser" -ForegroundColor White
+        Write-Host "Password: P@ssw0rd123!" -ForegroundColor White
+        Write-Host "Port: 3389" -ForegroundColor White
+        Write-Host "" 
+        Write-Host "Check ngrok dashboard at: http://localhost:4040" -ForegroundColor Yellow
+        Write-Host "==========================" -ForegroundColor Green
+        
+        # Show current performance metrics
+        Get-Counter "\Processor(_Total)\% Processor Time" -SampleInterval 1 -MaxSamples 1
+        Get-Counter "\Memory\Available MBytes" -SampleInterval 1 -MaxSamples 1
+        
+    - name: Keep session alive
+      run: |
+        Write-Host "Keeping RDP session alive for ${{ github.event.inputs.rdp_duration }} minutes..." -ForegroundColor Yellow
+        $duration = [int]"${{ github.event.inputs.rdp_duration }}"
+        $endTime = (Get-Date).AddMinutes($duration)
+        
+        while ((Get-Date) -lt $endTime) {
+            Write-Host "Session active. Time remaining: $(($endTime - (Get-Date)).ToString('hh\:mm\:ss'))" -ForegroundColor Green
+            
+            # Prevent system from sleeping
+            [System.Windows.Forms.SendKeys]::SendWait("{F15}")
+            
+            Start-Sleep -Seconds 60
+        }
+        
+        Write-Host "RDP session time expired. Workflow will end." -ForegroundColor Red
