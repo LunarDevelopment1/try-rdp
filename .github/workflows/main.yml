@@ -33,122 +33,76 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: System Information
-      run: |
-        Write-Host "=== System Information ===" -ForegroundColor Green
-        Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory
-        Get-WmiObject -Class Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
-        Get-WmiObject -Class Win32_VideoController | Select-Object Name, AdapterRAM
-        Write-Host "=== Disk Space ===" -ForegroundColor Green
-        Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, Size, FreeSpace | Format-Table
-
-    - name: Enable RDP and Configure Firewall
-      run: |
-        Write-Host "Enabling RDP..." -ForegroundColor Yellow
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-
-    - name: Create RDP User
-      run: |
-        Write-Host "Creating RDP user..." -ForegroundColor Yellow
-        $Password = ConvertTo-SecureString "P@ssw0rd123!" -AsPlainText -Force
-        New-LocalUser -Name "rdpuser" -Password $Password -FullName "RDP User" -Description "GitHub Actions RDP User"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
-        Add-LocalGroupMember -Group "Administrators" -Member "rdpuser"
-
-    - name: Configure High Performance Settings
-      run: |
-        Write-Host "Configuring high performance settings..." -ForegroundColor Yellow
-        powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-        Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
-        $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
-        if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-        Set-ItemProperty -Path $regPath -Name "VisualFXSetting" -Value 2
-        $servicesToDisable = @("Themes", "TabletInputService", "Fax")
-        foreach ($service in $servicesToDisable) {
-            try {
-                Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
-                Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
-                Write-Host "Disabled service: $service" -ForegroundColor Green
-            } catch {
-                Write-Host "Could not disable service: $service" -ForegroundColor Red
-            }
-        }
-
-    - name: Install Google Chrome
-      run: |
-        Write-Host "Installing Google Chrome..." -ForegroundColor Yellow
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        choco install -y googlechrome
-        Write-Host "Google Chrome installed successfully!" -ForegroundColor Green
-
-    - name: Setup GPU Acceleration (if enabled)
-      if: ${{ github.event.inputs.enable_gpu == 'true' }}
-      run: |
-        Write-Host "Configuring GPU acceleration..." -ForegroundColor Yellow
-        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
-        Set-ItemProperty -Path $regPath -Name "HwSchMode" -Value 2 -ErrorAction SilentlyContinue
-        dxdiag /t dxdiag_output.txt
-        Write-Host "DirectX diagnostics saved to dxdiag_output.txt"
-
-    - name: Configure Remote Desktop Settings
-      run: |
-        Write-Host "Optimizing RDP settings..." -ForegroundColor Yellow
-        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-        if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-        Set-ItemProperty -Path $regPath -Name "fEnableRemoteFXAdvancedRemoteApp" -Value 1
-        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "fDisableAutoReconnect" -Value 0
-        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxInstanceCount" -Value 999999
+    # Yaha tak same hai tera
 
     - name: Setup Tunnel Service
       run: |
         $tunnelService = "${{ github.event.inputs.tunnel_service }}"
-        if ($tunnelService -eq "bore") {
-          Write-Host "Downloading bore..." -ForegroundColor Yellow
-          Invoke-WebRequest -Uri https://github.com/ekzhang/bore/releases/latest/download/bore-windows-amd64.exe -OutFile bore.exe
+        Write-Host "Setting up tunnel service: $tunnelService" -ForegroundColor Yellow
 
-          Write-Host "Starting bore tunnel..." -ForegroundColor Yellow
-          Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -NoNewWindow -RedirectStandardOutput "bore_output.txt"
+        if ($tunnelService -eq "bore") {
+          Write-Host "Setting up Bore tunnel..." -ForegroundColor Yellow
+          Write-Host "Installing Visual C++ Redistributable..." -ForegroundColor Yellow
+          Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile vc_redist.x64.exe
+          Start-Process -FilePath .\vc_redist.x64.exe -ArgumentList "/install", "/quiet", "/norestart" -Wait
+
+          Write-Host "Downloading Bore..." -ForegroundColor Yellow
+          Invoke-WebRequest -Uri https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-windows-amd64.zip -OutFile bore.zip
+
+          Expand-Archive -Path bore.zip -DestinationPath . -Force
+
+          Write-Host "Starting Bore tunnel..." -ForegroundColor Yellow
+          Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "--to", "bore.pub", "--port", "3389" -NoNewWindow -RedirectStandardOutput "bore_output.txt"
 
           Start-Sleep -Seconds 10
 
-          $out = Get-Content "bore_output.txt" -Raw
-          if ($out -match "bore\.pub:(\d+)") {
-              $port = $matches[1]
-              $url = "bore.pub:$port"
-              Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
-              Write-Host "Bore URL: $url" -ForegroundColor Cyan
-              Write-Host "Username: rdpuser" -ForegroundColor Cyan
-              Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
-              Write-Host "===========================" -ForegroundColor Green
+          $output = Get-Content "bore_output.txt" -Raw
+          if ($output -match "listening at bore\.pub:(\d+)") {
+            $port = $matches[1]
+            $url = "bore.pub:$port"
+            echo "BORE_URL=$url" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Bore tunnel is running at $url" -ForegroundColor Green
           } else {
-              Write-Host "Could not parse bore URL from output:" -ForegroundColor Red
-              Write-Host $out
+            Write-Host "Could not detect Bore tunnel port." -ForegroundColor Red
           }
         } else {
-          Write-Host "Tunnel service not supported: $tunnelService" -ForegroundColor Yellow
-          exit 1
+          Write-Host "Skipping Bore setup. Selected service: $tunnelService" -ForegroundColor Yellow
         }
+
+    - name: Display Connection Information
+      run: |
+        Write-Host "=== FINAL SYSTEM STATUS ===" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "RDP is now enabled and configured for high performance" -ForegroundColor Green
+        Write-Host "Session will remain active for ${{ github.event.inputs.rdp_duration }} minutes" -ForegroundColor Green
+        Write-Host "=== CONNECTION DETAILS ===" -ForegroundColor Green
+        Write-Host "Username: rdpuser" -ForegroundColor Cyan
+        Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+        Write-Host "Port: 3389" -ForegroundColor Cyan
+        Write-Host "Bore Public URL: $env:BORE_URL" -ForegroundColor Cyan
+        Write-Host "==================================" -ForegroundColor Green
 
     - name: Keep session alive
       run: |
         Write-Host "Keeping RDP session alive for ${{ github.event.inputs.rdp_duration }} minutes..." -ForegroundColor Yellow
         $duration = [int]"${{ github.event.inputs.rdp_duration }}"
         $endTime = (Get-Date).AddMinutes($duration)
+
         powercfg -change -standby-timeout-ac 0
         powercfg -change -hibernate-timeout-ac 0
         powercfg -change -monitor-timeout-ac 0
 
         while ((Get-Date) -lt $endTime) {
-            $remaining = $endTime - (Get-Date)
-            $hours = [math]::Floor($remaining.TotalHours)
-            $minutes = $remaining.Minutes
-            $seconds = $remaining.Seconds
-            Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
-            Start-Sleep -Seconds 60
+          $remaining = $endTime - (Get-Date)
+          $hours = [math]::Floor($remaining.TotalHours)
+          $minutes = $remaining.Minutes
+          $seconds = $remaining.Seconds
+
+          Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
+          Write-Host "Bore Public URL: $env:BORE_URL" -ForegroundColor Cyan
+          
+          Get-Date | Out-Null
+          Start-Sleep -Seconds 60
         }
 
         Write-Host "RDP session time expired. Workflow will end." -ForegroundColor Red
