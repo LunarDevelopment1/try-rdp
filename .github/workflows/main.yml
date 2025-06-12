@@ -135,28 +135,82 @@ jobs:
 
             Write-Host "Starting ngrok tunnel..." -ForegroundColor Yellow
             # Start ngrok tunnel for RDP in background
-            Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp", "3389", "--log", "stdout" -WindowStyle Hidden
+            $ngrokProcess = Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -PassThru -WindowStyle Hidden
 
-            # Wait for ngrok to start
-            Start-Sleep -Seconds 15
+            # Wait for ngrok to start and retry if needed
+            $retryCount = 0
+            $maxRetries = 3
 
-            # Get ngrok tunnel URL
-            Write-Host "Retrieving tunnel information..." -ForegroundColor Yellow
-            $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction SilentlyContinue
+            do {
+                Start-Sleep -Seconds 10
+                $retryCount++
+                Write-Host "Checking ngrok status (attempt $retryCount/$maxRetries)..." -ForegroundColor Yellow
 
-            if ($ngrokApi -and $ngrokApi.tunnels) {
-                $rdpTunnel = $ngrokApi.tunnels | Where-Object { $_.config.addr -eq "localhost:3389" }
-                if ($rdpTunnel) {
-                    Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
-                    Write-Host "RDP Address: $($rdpTunnel.public_url -replace 'tcp://', '')" -ForegroundColor Cyan
-                    Write-Host "Username: rdpuser" -ForegroundColor Cyan
-                    Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
-                    Write-Host "=========================" -ForegroundColor Green
-                } else {
-                    Write-Host "Ngrok tunnel created but RDP tunnel not found in API response" -ForegroundColor Yellow
+                try {
+                    $testConnection = Test-NetConnection -ComputerName "localhost" -Port 4040 -WarningAction SilentlyContinue
+                    if ($testConnection.TcpTestSucceeded) {
+                        Write-Host "Ngrok API is responding!" -ForegroundColor Green
+                        break
+                    }
+                } catch {
+                    Write-Host "Ngrok not ready yet, retrying..." -ForegroundColor Yellow
                 }
-            } else {
-                Write-Host "Could not retrieve ngrok API response" -ForegroundColor Yellow
+
+                if ($retryCount -eq $maxRetries) {
+                    Write-Host "Restarting ngrok process..." -ForegroundColor Yellow
+                    Stop-Process -Id $ngrokProcess.Id -Force -ErrorAction SilentlyContinue
+                    $ngrokProcess = Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -PassThru -WindowStyle Hidden
+                    Start-Sleep -Seconds 15
+                }
+            } while ($retryCount -lt $maxRetries)
+
+            # Get ngrok tunnel URL with retry logic
+            Write-Host "Retrieving tunnel information..." -ForegroundColor Yellow
+
+            $attempts = 0
+            $maxAttempts = 5
+            $tunnelFound = $false
+
+            do {
+                $attempts++
+                Write-Host "Attempt $attempts/$maxAttempts to get tunnel info..." -ForegroundColor Yellow
+
+                try {
+                    $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -TimeoutSec 10 -ErrorAction Stop
+
+                    if ($ngrokApi -and $ngrokApi.tunnels) {
+                        $rdpTunnel = $ngrokApi.tunnels | Where-Object { $_.config.addr -eq "localhost:3389" }
+                        if ($rdpTunnel) {
+                            Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
+                            Write-Host "RDP Address: $($rdpTunnel.public_url -replace 'tcp://', '')" -ForegroundColor Cyan
+                            Write-Host "Username: rdpuser" -ForegroundColor Cyan
+                            Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+                            Write-Host "=========================" -ForegroundColor Green
+                            $tunnelFound = $true
+                            break
+                        } else {
+                            Write-Host "Tunnel not ready yet, waiting..." -ForegroundColor Yellow
+                        }
+                    } else {
+                        Write-Host "Ngrok API not responding yet, waiting..." -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "API call failed (attempt $attempts): $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+
+                if ($attempts -lt $maxAttempts) {
+                    Start-Sleep -Seconds 8
+                }
+            } while ($attempts -lt $maxAttempts -and -not $tunnelFound)
+
+            if (-not $tunnelFound) {
+                Write-Host "=== MANUAL NGROK SETUP REQUIRED ===" -ForegroundColor Red
+                Write-Host "Automatic ngrok setup failed. Manual steps:" -ForegroundColor Yellow
+                Write-Host "1. Download ngrok: https://ngrok.com/download" -ForegroundColor Yellow
+                Write-Host "2. Run: ngrok tcp 3389" -ForegroundColor Yellow
+                Write-Host "3. Use the provided address" -ForegroundColor Yellow
+                Write-Host "Username: rdpuser | Password: P@ssw0rd123!" -ForegroundColor Cyan
+                Write-Host "=================================" -ForegroundColor Red
             }
         } catch {
             Write-Host "Error setting up ngrok: $($_.Exception.Message)" -ForegroundColor Red
