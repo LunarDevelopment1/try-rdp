@@ -13,6 +13,11 @@ on:
         required: false
         default: true
         type: boolean
+      ngrok_token:
+        description: 'Ngrok Auth Token (get from https://dashboard.ngrok.com/get-started/your-authtoken)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   setup-windows-rdp:
@@ -132,6 +137,16 @@ jobs:
 
             # Add to PATH
             $env:PATH = $env:PATH + ";C:\ngrok"
+
+            # Setup auth token if provided
+            if ("${{ github.event.inputs.ngrok_token }}" -ne "") {
+                Write-Host "Setting up ngrok auth token..." -ForegroundColor Yellow
+                & "C:\ngrok\ngrok.exe" config add-authtoken "${{ github.event.inputs.ngrok_token }}"
+                Write-Host "Auth token configured successfully!" -ForegroundColor Green
+            } else {
+                Write-Host "WARNING: No ngrok auth token provided. Ngrok may fail without authentication." -ForegroundColor Red
+                Write-Host "Get your free token from: https://dashboard.ngrok.com/get-started/your-authtoken" -ForegroundColor Yellow
+            }
 
             Write-Host "Starting ngrok tunnel..." -ForegroundColor Yellow
             # Start ngrok tunnel for RDP in background
