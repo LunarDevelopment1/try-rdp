@@ -1,6 +1,4 @@
-name: Windows RDP with High Performance
-
-name: Windows RDP with Ngrok Tunnel
+name: Windows RDP with High Performance (Ngrok Only)
 
 on:
   workflow_dispatch:
@@ -10,6 +8,11 @@ on:
         required: false
         default: '180'
         type: string
+      enable_gpu:
+        description: 'Enable GPU acceleration'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   setup-windows-rdp:
@@ -20,45 +23,44 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup Ngrok Tunnel
+    - name: Enable RDP and Configure Firewall
       run: |
-        Write-Host "Setting up Ngrok tunnel..." -ForegroundColor Yellow
+        Write-Host "Enabling RDP..." -ForegroundColor Yellow
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
 
-        # Ngrok Auth (Replace this with your authtoken)
-        $NGROK_AUTH_TOKEN = "YOUR_NGROK_AUTH_TOKEN_HERE"
+    - name: Create RDP User
+      run: |
+        Write-Host "Creating RDP user..." -ForegroundColor Yellow
+        $Password = ConvertTo-SecureString "P@ssw0rd123!" -AsPlainText -Force
+        New-LocalUser -Name "rdpuser" -Password $Password -FullName "RDP User" -Description "GitHub Actions RDP User"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
+        Add-LocalGroupMember -Group "Administrators" -Member "rdpuser"
 
-        Invoke-WebRequest -Uri https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+    - name: Install Ngrok
+      run: |
+        Write-Host "Downloading Ngrok..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
         Expand-Archive -Path ngrok.zip -DestinationPath . -Force
 
-        .\ngrok.exe authtoken $NGROK_AUTH_TOKEN
-
-        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389" -NoNewWindow -RedirectStandardOutput "ngrok_output.txt"
-
+    - name: Configure Ngrok
+      run: |
+        Write-Host "Configuring Ngrok..." -ForegroundColor Yellow
+        .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
         Start-Sleep -Seconds 10
 
-        $output = Get-Content "ngrok_output.txt" -Raw
-        if ($output -match "tcp://(.+):(\d+)") {
-          $host = $matches[1]
-          $port = $matches[2]
-          $url = "$host:$port"
-          echo "NGROK_URL=$url" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Ngrok tunnel is running at $url" -ForegroundColor Green
-        } else {
-          Write-Host "Could not detect Ngrok tunnel address." -ForegroundColor Red
-        }
-
-    - name: Display Connection Information
+    - name: Display RDP Connection Info
       run: |
-        Write-Host "=== FINAL SYSTEM STATUS ===" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "RDP is now enabled and configured for high performance" -ForegroundColor Green
-        Write-Host "Session will remain active for ${{ github.event.inputs.rdp_duration }} minutes" -ForegroundColor Green
-        Write-Host "=== CONNECTION DETAILS ===" -ForegroundColor Green
-        Write-Host "Username: rdpuser" -ForegroundColor Cyan
-        Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
-        Write-Host "Port: 3389" -ForegroundColor Cyan
-        Write-Host "Ngrok Public URL: $env:NGROK_URL" -ForegroundColor Cyan
-        Write-Host "==================================" -ForegroundColor Green
+        $NgrokApi = "http://127.0.0.1:4040/api/tunnels"
+        $Response = Invoke-RestMethod -Uri $NgrokApi
+        $PublicUrl = $Response.tunnels[0].public_url
+        Write-Host "=====================================" -ForegroundColor Green
+        Write-Host "🔐 RDP IP:PORT => $PublicUrl" -ForegroundColor Green
+        Write-Host "👤 Username: rdpuser" -ForegroundColor Green
+        Write-Host "🔑 Password: P@ssw0rd123!" -ForegroundColor Green
+        Write-Host "=====================================" -ForegroundColor Green
 
     - name: Keep session alive
       run: |
@@ -71,17 +73,15 @@ jobs:
         powercfg -change -monitor-timeout-ac 0
 
         while ((Get-Date) -lt $endTime) {
-          $remaining = $endTime - (Get-Date)
-          $hours = [math]::Floor($remaining.TotalHours)
-          $minutes = $remaining.Minutes
-          $seconds = $remaining.Seconds
+            $remaining = $endTime - (Get-Date)
+            $hours = [math]::Floor($remaining.TotalHours)
+            $minutes = $remaining.Minutes
+            $seconds = $remaining.Seconds
 
-          Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
-          Write-Host "Ngrok Public URL: $env:NGROK_URL" -ForegroundColor Cyan
-
-          Get-Date | Out-Null
-          Start-Sleep -Seconds 60
+            Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
+            Get-Date | Out-Null
+            Start-Sleep -Seconds 60
         }
 
         Write-Host "RDP session time expired. Workflow will end." -ForegroundColor Red
-        
+
