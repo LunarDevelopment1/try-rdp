@@ -78,20 +78,19 @@ jobs:
             }
         }
         
-    - name: Install Essential Software
+    - name: Install Google Chrome
       run: |
-        Write-Host "Installing essential software..." -ForegroundColor Yellow
-        
+        Write-Host "Installing Google Chrome..." -ForegroundColor Yellow
+
         # Install Chocolatey
         Set-ExecutionPolicy Bypass -Scope Process -Force
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
         iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        
-        # Install useful tools
-        choco install -y googlechrome firefox 7zip notepadplusplus git vscode
-        
-        # Install development tools
-        choco install -y nodejs python3 dotnet-sdk
+
+        # Install only Google Chrome
+        choco install -y googlechrome
+
+        Write-Host "Google Chrome installed successfully!" -ForegroundColor Green
         
     - name: Setup GPU Acceleration (if enabled)
       if: ${{ github.event.inputs.enable_gpu == 'true' }}
