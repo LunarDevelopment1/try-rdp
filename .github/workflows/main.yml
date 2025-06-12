@@ -60,15 +60,11 @@ jobs:
     - name: Configure High Performance Settings
       run: |
         Write-Host "Configuring high performance settings..." -ForegroundColor Yellow
-
         powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-
         Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
-
         $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
         if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
         Set-ItemProperty -Path $regPath -Name "VisualFXSetting" -Value 2
-
         $servicesToDisable = @("Themes", "TabletInputService", "Fax")
         foreach ($service in $servicesToDisable) {
             try {
@@ -83,64 +79,58 @@ jobs:
     - name: Install Google Chrome
       run: |
         Write-Host "Installing Google Chrome..." -ForegroundColor Yellow
-
         Set-ExecutionPolicy Bypass -Scope Process -Force
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
         iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-
         choco install -y googlechrome
-
         Write-Host "Google Chrome installed successfully!" -ForegroundColor Green
 
     - name: Setup GPU Acceleration (if enabled)
       if: ${{ github.event.inputs.enable_gpu == 'true' }}
       run: |
         Write-Host "Configuring GPU acceleration..." -ForegroundColor Yellow
-
         $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
         Set-ItemProperty -Path $regPath -Name "HwSchMode" -Value 2 -ErrorAction SilentlyContinue
-
         dxdiag /t dxdiag_output.txt
         Write-Host "DirectX diagnostics saved to dxdiag_output.txt"
 
     - name: Configure Remote Desktop Settings
       run: |
         Write-Host "Optimizing RDP settings..." -ForegroundColor Yellow
-
         $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
         if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
         Set-ItemProperty -Path $regPath -Name "fEnableRemoteFXAdvancedRemoteApp" -Value 1
-
         Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "fDisableAutoReconnect" -Value 0
         Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxInstanceCount" -Value 999999
 
     - name: Setup Tunnel Service
       run: |
         $tunnelService = "${{ github.event.inputs.tunnel_service }}"
-        Write-Host "Setting up tunnel service: $tunnelService" -ForegroundColor Yellow
+        if ($tunnelService -eq "bore") {
+          Write-Host "Downloading bore..." -ForegroundColor Yellow
+          Invoke-WebRequest -Uri https://github.com/ekzhang/bore/releases/latest/download/bore-windows-amd64.exe -OutFile bore.exe
 
-        if ($tunnelService -eq "ngrok") {
-            Write-Host "Setting up ngrok tunnel..." -ForegroundColor Yellow
+          Write-Host "Starting bore tunnel..." -ForegroundColor Yellow
+          Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -NoNewWindow -RedirectStandardOutput "bore_output.txt"
 
-            Write-Host "Downloading ngrok..." -ForegroundColor Yellow
-            Invoke-WebRequest -Uri https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
+          Start-Sleep -Seconds 10
 
-            Expand-Archive -Path ngrok.zip -DestinationPath . -Force
-
-            Write-Host "Configuring ngrok auth token..." -ForegroundColor Yellow
-        .\ngrok.exe authtoken 2yPVxVT8KKZZA6DQ4oBQVcurESk_XbBMnNoCmQk5dcfqTy52
-
-            Write-Host "Starting ngrok tunnel..." -ForegroundColor Yellow
-            Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp", "3389" -WindowStyle Hidden
-
-            Start-Sleep -Seconds 10
-
-            Write-Host "Ngrok is running!" -ForegroundColor Green
-            Write-Host "Check ngrok dashboard at: http://localhost:4040" -ForegroundColor Yellow
-            Write-Host "Username: rdpuser" -ForegroundColor Cyan
-            Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+          $out = Get-Content "bore_output.txt" -Raw
+          if ($out -match "bore\.pub:(\d+)") {
+              $port = $matches[1]
+              $url = "bore.pub:$port"
+              Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
+              Write-Host "Bore URL: $url" -ForegroundColor Cyan
+              Write-Host "Username: rdpuser" -ForegroundColor Cyan
+              Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+              Write-Host "===========================" -ForegroundColor Green
+          } else {
+              Write-Host "Could not parse bore URL from output:" -ForegroundColor Red
+              Write-Host $out
+          }
         } else {
-            Write-Host "Skipping ngrok setup. Selected service: $tunnelService" -ForegroundColor Yellow
+          Write-Host "Tunnel service not supported: $tunnelService" -ForegroundColor Yellow
+          exit 1
         }
 
     - name: Keep session alive
@@ -148,7 +138,6 @@ jobs:
         Write-Host "Keeping RDP session alive for ${{ github.event.inputs.rdp_duration }} minutes..." -ForegroundColor Yellow
         $duration = [int]"${{ github.event.inputs.rdp_duration }}"
         $endTime = (Get-Date).AddMinutes($duration)
-
         powercfg -change -standby-timeout-ac 0
         powercfg -change -hibernate-timeout-ac 0
         powercfg -change -monitor-timeout-ac 0
@@ -158,12 +147,7 @@ jobs:
             $hours = [math]::Floor($remaining.TotalHours)
             $minutes = $remaining.Minutes
             $seconds = $remaining.Seconds
-
             Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
-            Write-Host "Ngrok dashboard: http://localhost:4040" -ForegroundColor Cyan
-
-            Get-Date | Out-Null
-
             Start-Sleep -Seconds 60
         }
 
