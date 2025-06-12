@@ -136,26 +136,65 @@ jobs:
             "bore" {
                 Write-Host "Setting up Bore tunnel..." -ForegroundColor Yellow
                 try {
-                    # Download bore
-                    $boreUrl = "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-pc-windows-msvc.exe"
-                    Write-Host "Downloading bore..." -ForegroundColor Yellow
-                    Invoke-WebRequest -Uri $boreUrl -OutFile "bore.exe" -UseBasicParsing
+                    # Install Visual C++ Redistributable first
+                    Write-Host "Installing Visual C++ Redistributable..." -ForegroundColor Yellow
+                    $vcRedistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+                    Invoke-WebRequest -Uri $vcRedistUrl -OutFile "vc_redist.x64.exe" -UseBasicParsing
+                    Start-Process -FilePath ".\vc_redist.x64.exe" -ArgumentList "/quiet" -Wait
+
+                    # Download bore (correct URL and version)
+                    $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip"
+                    Write-Host "Downloading bore v0.6.0..." -ForegroundColor Yellow
+                    Invoke-WebRequest -Uri $boreUrl -OutFile "bore.zip" -UseBasicParsing
+
+                    # Extract bore
+                    Write-Host "Extracting bore..." -ForegroundColor Yellow
+                    Expand-Archive -Path "bore.zip" -DestinationPath "." -Force
+
+                    # Test bore
+                    Write-Host "Testing bore..." -ForegroundColor Yellow
+                    $testResult = & ".\bore.exe" --help 2>&1
+                    Write-Host "Bore test result: $testResult" -ForegroundColor Green
 
                     Write-Host "Starting bore tunnel..." -ForegroundColor Yellow
-                    # Start bore tunnel in background
-                    $boreProcess = Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -PassThru -WindowStyle Hidden
+                    # Start bore tunnel and capture output
+                    $boreProcess = Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -PassThru -RedirectStandardOutput "bore_output.txt" -RedirectStandardError "bore_error.txt"
 
-                    # Wait a bit for bore to start
-                    Start-Sleep -Seconds 10
+                    # Wait for bore to start and get the address
+                    Start-Sleep -Seconds 15
 
-                    Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
-                    Write-Host "Bore tunnel started! Check bore.pub for your address" -ForegroundColor Cyan
-                    Write-Host "Username: rdpuser" -ForegroundColor Cyan
-                    Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
-                    Write-Host "Note: Check bore.pub website for your specific tunnel address" -ForegroundColor Yellow
-                    Write-Host "=========================" -ForegroundColor Green
+                    # Read bore output to get the tunnel address
+                    if (Test-Path "bore_output.txt") {
+                        $boreOutput = Get-Content "bore_output.txt" -Raw
+                        Write-Host "Bore Output: $boreOutput" -ForegroundColor Cyan
+                    }
+
+                    if (Test-Path "bore_error.txt") {
+                        $boreError = Get-Content "bore_error.txt" -Raw
+                        if ($boreError) {
+                            Write-Host "Bore Error: $boreError" -ForegroundColor Red
+                        }
+                    }
+
+                    # Check if bore process is running
+                    if ($boreProcess -and !$boreProcess.HasExited) {
+                        Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
+                        Write-Host "Bore tunnel is running! Process ID: $($boreProcess.Id)" -ForegroundColor Cyan
+                        Write-Host "Check bore.pub for your tunnel address" -ForegroundColor Cyan
+                        Write-Host "Username: rdpuser" -ForegroundColor Cyan
+                        Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+                        Write-Host "Note: Tunnel address will be shown at bore.pub" -ForegroundColor Yellow
+                        Write-Host "=========================" -ForegroundColor Green
+                    } else {
+                        Write-Host "Bore process failed to start or exited immediately" -ForegroundColor Red
+                        if (Test-Path "bore_error.txt") {
+                            $errorContent = Get-Content "bore_error.txt"
+                            Write-Host "Error details: $errorContent" -ForegroundColor Red
+                        }
+                    }
                 } catch {
                     Write-Host "Error setting up bore: $($_.Exception.Message)" -ForegroundColor Red
+                    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
                 }
             }
 
