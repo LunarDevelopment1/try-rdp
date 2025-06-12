@@ -127,6 +127,9 @@ jobs:
 
             Expand-Archive -Path ngrok.zip -DestinationPath . -Force
 
+            Write-Host "Configuring ngrok auth token..." -ForegroundColor Yellow
+        .\ngrok.exe authtoken 2yPVxVT8KKZZA6DQ4oBQVcurESk_XbBMnNoCmQk5dcfqTy52
+
             Write-Host "Starting ngrok tunnel..." -ForegroundColor Yellow
             Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp", "3389" -WindowStyle Hidden
 
