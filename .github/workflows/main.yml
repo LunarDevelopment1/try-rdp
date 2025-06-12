@@ -121,31 +121,49 @@ jobs:
     - name: Install ngrok for RDP tunneling
       run: |
         Write-Host "Setting up ngrok for RDP access..." -ForegroundColor Yellow
-        
-        # Download and install ngrok
-        Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-        Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok"
-        $env:PATH += ";C:\ngrok"
-        
-        # Start ngrok tunnel for RDP
-        Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log stdout" -NoNewWindow
-        
-        Start-Sleep -Seconds 10
-        
-        # Get ngrok tunnel URL
+
         try {
-            $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-            $rdpTunnel = $ngrokApi.tunnels | Where-Object { $_.config.addr -eq "localhost:3389" }
-            if ($rdpTunnel) {
-                Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
-                Write-Host "RDP Address: $($rdpTunnel.public_url -replace 'tcp://', '')" -ForegroundColor Cyan
-                Write-Host "Username: rdpuser" -ForegroundColor Cyan
-                Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
-                Write-Host "=========================" -ForegroundColor Green
+            # Download and install ngrok
+            Write-Host "Downloading ngrok..." -ForegroundColor Yellow
+            Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip" -UseBasicParsing
+
+            Write-Host "Extracting ngrok..." -ForegroundColor Yellow
+            Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok" -Force
+
+            # Add to PATH
+            $env:PATH = $env:PATH + ";C:\ngrok"
+
+            Write-Host "Starting ngrok tunnel..." -ForegroundColor Yellow
+            # Start ngrok tunnel for RDP in background
+            Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp", "3389", "--log", "stdout" -WindowStyle Hidden
+
+            # Wait for ngrok to start
+            Start-Sleep -Seconds 15
+
+            # Get ngrok tunnel URL
+            Write-Host "Retrieving tunnel information..." -ForegroundColor Yellow
+            $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction SilentlyContinue
+
+            if ($ngrokApi -and $ngrokApi.tunnels) {
+                $rdpTunnel = $ngrokApi.tunnels | Where-Object { $_.config.addr -eq "localhost:3389" }
+                if ($rdpTunnel) {
+                    Write-Host "=== RDP CONNECTION INFO ===" -ForegroundColor Green
+                    Write-Host "RDP Address: $($rdpTunnel.public_url -replace 'tcp://', '')" -ForegroundColor Cyan
+                    Write-Host "Username: rdpuser" -ForegroundColor Cyan
+                    Write-Host "Password: P@ssw0rd123!" -ForegroundColor Cyan
+                    Write-Host "=========================" -ForegroundColor Green
+                } else {
+                    Write-Host "Ngrok tunnel created but RDP tunnel not found in API response" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "Could not retrieve ngrok API response" -ForegroundColor Yellow
             }
         } catch {
-            Write-Host "Could not retrieve ngrok tunnel info. Check manually at http://localhost:4040" -ForegroundColor Yellow
+            Write-Host "Error setting up ngrok: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "You can check ngrok status manually at http://localhost:4040" -ForegroundColor Yellow
         }
+
+        Write-Host "Ngrok setup completed. Check http://localhost:4040 for tunnel details." -ForegroundColor Green
         
     - name: Display Connection Information
       run: |
@@ -170,14 +188,25 @@ jobs:
         Write-Host "Keeping RDP session alive for ${{ github.event.inputs.rdp_duration }} minutes..." -ForegroundColor Yellow
         $duration = [int]"${{ github.event.inputs.rdp_duration }}"
         $endTime = (Get-Date).AddMinutes($duration)
-        
+
+        # Disable sleep and hibernation
+        powercfg -change -standby-timeout-ac 0
+        powercfg -change -hibernate-timeout-ac 0
+        powercfg -change -monitor-timeout-ac 0
+
         while ((Get-Date) -lt $endTime) {
-            Write-Host "Session active. Time remaining: $(($endTime - (Get-Date)).ToString('hh\:mm\:ss'))" -ForegroundColor Green
-            
-            # Prevent system from sleeping
-            [System.Windows.Forms.SendKeys]::SendWait("{F15}")
-            
+            $remaining = $endTime - (Get-Date)
+            $hours = [math]::Floor($remaining.TotalHours)
+            $minutes = $remaining.Minutes
+            $seconds = $remaining.Seconds
+
+            Write-Host "Session active. Time remaining: ${hours}h ${minutes}m ${seconds}s" -ForegroundColor Green
+            Write-Host "RDP Address available via ngrok tunnel" -ForegroundColor Cyan
+
+            # Simple keep-alive without SendKeys
+            Get-Date | Out-Null
+
             Start-Sleep -Seconds 60
         }
-        
+
         Write-Host "RDP session time expired. Workflow will end." -ForegroundColor Red
